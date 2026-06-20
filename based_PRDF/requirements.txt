@@ -1,0 +1,15 @@
+h5py>=3.7,<4
+numpy>=1.23,<2
+Pillow>=9.4
+PyYAML>=6.0
+tqdm>=4.64
+transformers>=4.50,<5
+pytest>=7
+accelerate>=0.28
+sentencepiece
+opencv-python
+
+# Install a CUDA-compatible torch/torchvision pair separately.
+# Local model sources are provided under third_party/SAM2. The legacy
+# MMDetection head-detector backend remains available under
+# third_party/mmdetection.

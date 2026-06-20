@@ -1,0 +1,157 @@
+input:
+  # "gazefollow" parses and deduplicates annotation image paths.
+  # "directory" recursively discovers images under path.
+  type: gazefollow
+  path: /data/wangxiyun/Dataset/gazefollow_subset_50/
+  split: train
+  extensions: [".jpg", ".jpeg", ".png"]
+  # Set to a small integer for debug runs, or null for the full dataset.
+  limit: 5
+
+output:
+  h5_path: ./outputs/gaze_preprocessing.h5
+  overwrite: true
+  save_masks: true
+  compression: gzip
+  compression_opts: 4
+
+visualization:
+  output_dir: ./outputs/images
+  draw_mask: true
+  draw_bbox: true
+  draw_head: true
+  mask_alpha: 0.35
+  show_description: true
+  show_depth: true
+  max_description_chars: 48
+
+sam2:
+  source_path: ./third_party/SAM2
+  checkpoint: ./checkpoints/sam2.1_hiera_large.pt
+  # Hydra config name inside the local sam2 package.
+  config: configs/sam2.1/sam2.1_hiera_l.yaml
+  dtype: bfloat16
+  generator:
+    points_per_side: 32
+    points_per_batch: 64
+    pred_iou_thresh: 0.8
+    stability_score_thresh: 0.95
+    stability_score_offset: 1.0
+    box_nms_thresh: 0.7
+    crop_n_layers: 0
+    crop_n_points_downscale_factor: 1
+    min_mask_region_area: 64
+    multimask_output: true
+    use_m2m: false
+
+llm:
+  # Match-stage reasoning model endpoint.
+  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen3.7-max"
+  # Leave api_key empty for public configs; prefer api_key_env_var.
+  api_key: ""
+  api_key_env_var: "LLM_API_KEY"  # sk-c02532d46b6d47ffa8583bae446fffcd
+  # api_mode: "responses"
+  reasoning_effort: "xhigh"
+  reasoning:
+    summary: "auto"
+  max_tokens: 65536
+  max_total_tokens: 1000000
+  max_thinking_budget: 65536
+  max_requests_per_minute: 30
+  max_concurrent_requests: 8
+  max_tokens_per_minute: 2000000
+  rate_limit_headroom_ratio: 0.9
+  rate_limit_mode: "token_bucket_settlement"
+  max_retries: 0
+  retry_backoff_base_seconds: 4.0
+  max_threads: 8
+  enable_dynamic_scaling: true
+  max_dynamic_workers: 8
+
+vlm:
+  # Caption-stage model endpoint.
+  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen3.5-27b"
+  # Leave api_key empty for public configs; prefer api_key_env_var.
+  api_key: ""
+  api_key_env_var: "VLM_API_KEY"
+  # api_mode: "chat_completions"
+  # timeout: 1800.0
+  # max_tokens: 8192
+  # max_retries: 1
+  api_mode: "responses"
+  reasoning_effort: "xhigh"
+  timeout: 1800.0
+  reasoning:
+    summary: "auto"
+  max_tokens: 65536
+  max_requests_per_minute: 30
+  max_concurrent_requests: 8
+  max_tokens_per_minute: 2000000
+  rate_limit_headroom_ratio: 0.9
+  rate_limit_mode: "token_bucket_settlement"
+  max_retries: 0
+  retry_backoff_base_seconds: 4.0
+  max_threads: 8
+
+bbox_filter:
+  min_width: 2
+  min_height: 2
+  min_area: 16
+  min_area_ratio: 0.0001
+  max_area_ratio: 0.95
+  duplicate_iou_threshold: 0.85
+  containment_threshold: 0.95
+  containment_area_ratio: 0.5
+
+head_detector:
+  backend: hf_grounding_dino
+  model_id: openmmlab-community/mm_grounding_dino_tiny_o365v1_goldg_v3det
+  # The model is already cached here. Offline mode resolves model_id to the
+  # local Hugging Face snapshot without making network requests.
+  cache_dir: ./checkpoints/huggingface
+  local_files_only: true
+  prompts: ["person head", "human head", "head", "human face"]
+  allowed_labels: ["person head", "human head", "head"]
+  score_threshold: 0.3
+  box_threshold: 0.3
+  text_threshold: 0.25
+  nms_threshold: 0.5
+  max_detections: 20
+  min_width: 2
+  min_height: 2
+  min_area: 16
+
+description:
+  enabled: true
+  source_path: ./third_party/Describe-Anything
+  checkpoint: ./checkpoints/DAM-3B
+  device: cuda:0
+  object_prompt: >-
+    Describe the highlighted gaze-target candidate object, including its
+    category, appearance, and position in the image.
+  head_prompt: >-
+    Describe the highlighted person's head, including visibility, orientation,
+    occlusion, and relative position in the image.
+  conv_mode: v1
+  prompt_mode: full+focal_crop
+  temperature: 0.2
+  top_p: 0.5
+  num_beams: 1
+  max_new_tokens: 256
+  batch_size: 1
+
+depth:
+  enabled: true
+  source_path: ./third_party/Depth-Anything-V2
+  checkpoint: ./checkpoints/depth-anything-v2/depth_anything_v2_vitl.pth
+  device: cuda:0
+  encoder: vitl
+  input_size: 518
+  batch_size: 1
+  normalization: per_image_minmax
+  save_depth_map: false
+
+runtime:
+  device: cuda:0
