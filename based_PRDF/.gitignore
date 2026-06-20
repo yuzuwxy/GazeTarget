@@ -1,0 +1,13 @@
+third_party/
+agents/
+codex/
+.agents/
+.codex/
+pytest_cache/
+.pytest_cache/
+checkpoints/
+dataset/
+docs/
+outputs/
+__pycache__/
+**/__pycache__/
