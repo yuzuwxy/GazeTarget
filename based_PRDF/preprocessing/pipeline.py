@@ -3,7 +3,7 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
-from .bbox import MaskCandidate, filter_object_candidates, mask_to_bbox
+from .bbox import MaskCandidate, clip_bbox, mask_to_bbox
 
 
 class GazePreprocessingPipeline:
@@ -11,7 +11,6 @@ class GazePreprocessingPipeline:
         self,
         *,
         segmenter,
-        head_detector,
         bbox_config,
         writer,
         save_masks=False,
@@ -19,7 +18,6 @@ class GazePreprocessingPipeline:
         captioner=None,
     ):
         self.segmenter = segmenter
-        self.head_detector = head_detector
         self.bbox_config = bbox_config
         self.writer = writer
         self.save_masks = bool(save_masks)
@@ -49,10 +47,11 @@ class GazePreprocessingPipeline:
                     mask=mask,
                 )
             )
-        objects = filter_object_candidates(
-            candidates, (width, height), self.bbox_config
+        # SAM2 bbox post-processing is intentionally disabled for inspection.
+        objects = candidates
+        head_bboxes, head_scores = self._record_head_annotations(
+            record, image_size=(width, height)
         )
-        head_bboxes, head_scores = self.head_detector.detect(image)
         object_bboxes = np.asarray(
             [item.bbox for item in objects], dtype=np.float32
         ).reshape(-1, 4)
@@ -118,3 +117,22 @@ class GazePreprocessingPipeline:
                 ) from exc
             processed += 1
         return processed
+
+    @staticmethod
+    def _record_head_annotations(record, *, image_size):
+        width, height = image_size
+        raw_boxes = getattr(record, "head_bboxes", ()) or ()
+        raw_scores = getattr(record, "head_scores", ()) or ()
+        boxes = []
+        scores = []
+        for index, box in enumerate(raw_boxes):
+            clipped = clip_bbox(box, width, height)
+            if clipped is None:
+                continue
+            boxes.append(clipped)
+            score = float(raw_scores[index]) if index < len(raw_scores) else 1.0
+            scores.append(score)
+        return (
+            np.asarray(boxes, dtype=np.float32).reshape(-1, 4),
+            np.asarray(scores, dtype=np.float32),
+        )

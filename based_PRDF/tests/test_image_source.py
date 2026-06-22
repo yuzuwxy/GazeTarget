@@ -27,9 +27,10 @@ def test_gazefollow_discovery_deduplicates_annotation_rows(tmp_path):
     _write_image(data_extended / "train" / "b.jpg")
     annotation = data_extended / "train_annotations_release.txt"
     annotation.write_text(
-        "train/a.jpg,1,0,0,1,1,0,0,0,0,0,0,1,1,1,x,y\n"
-        "train/a.jpg,2,0,0,1,1,0,0,0,0,0,0,1,1,1,x,y\n"
-        "train/b.jpg,3,0,0,1,1,0,0,0,0,0,0,1,1,1,x,y\n",
+        "train/a.jpg,1,0,0,1,1,0,0,0,0,10,11,20,21,1,x,y\n"
+        "train/a.jpg,2,0,0,1,1,0,0,0,0,10,11,20,21,1,x,y\n"
+        "train/a.jpg,3,0,0,1,1,0,0,0,0,30,31,40,41,1,x,y\n"
+        "train/b.jpg,4,0,0,1,1,0,0,0,0,50,51,60,61,1,x,y\n",
         encoding="utf-8",
     )
 
@@ -38,3 +39,10 @@ def test_gazefollow_discovery_deduplicates_annotation_rows(tmp_path):
     )
 
     assert [record.relative_path for record in records] == ["train/a.jpg", "train/b.jpg"]
+    assert records[0].head_bboxes == (
+        (10.0, 11.0, 20.0, 21.0),
+        (30.0, 31.0, 40.0, 41.0),
+    )
+    assert records[0].head_scores == (1.0, 1.0)
+    assert records[1].head_bboxes == ((50.0, 51.0, 60.0, 61.0),)
+    assert records[1].head_scores == (1.0,)

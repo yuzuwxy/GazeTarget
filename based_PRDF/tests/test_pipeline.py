@@ -38,14 +38,6 @@ class FakeSegmenter:
         ]
 
 
-class FakeHeadDetector:
-    def detect(self, image):
-        return (
-            np.asarray([[0, 0, 4, 4]], dtype=np.float32),
-            np.asarray([0.88], dtype=np.float32),
-        )
-
-
 class FakeDepthEstimator:
     save_depth_map = True
 
@@ -94,19 +86,9 @@ class FakeStack:
         return context
 
 
-def test_build_pipeline_uses_head_detector_factory(monkeypatch):
-    captured = {}
-    fake_detector = FakeHeadDetector()
-
+def test_build_pipeline_does_not_require_head_detector(monkeypatch):
     monkeypatch.setattr(main, "SAM2Segmenter", lambda **kwargs: FakeContext())
     monkeypatch.setattr(main, "_require_runtime_device", lambda device: None)
-
-    def fake_factory(config, *, device):
-        captured["config"] = config
-        captured["device"] = device
-        return fake_detector
-
-    monkeypatch.setattr(main, "build_head_detector", fake_factory)
     config = {
         "runtime": {"device": "cpu"},
         "sam2": {
@@ -114,34 +96,30 @@ def test_build_pipeline_uses_head_detector_factory(monkeypatch):
             "checkpoint": "sam.pt",
             "config": "sam.yaml",
         },
-        "head_detector": {
-            "backend": "hf_grounding_dino",
-            "model_id": "test/model",
-            "prompts": ["head"],
-        },
         "bbox_filter": {},
         "output": {"save_masks": False},
     }
 
     pipeline = main.build_pipeline(config, writer=object(), stack=FakeStack())
 
-    assert pipeline.head_detector is fake_detector
-    assert captured == {
-        "config": config["head_detector"],
-        "device": "cpu",
-    }
+    assert not hasattr(pipeline, "head_detector")
 
 
 def test_pipeline_runs_end_to_end_with_replaceable_models(tmp_path):
     image_path = tmp_path / "input.jpg"
     Image.new("RGB", (14, 8), color=(100, 120, 140)).save(image_path)
     output_path = tmp_path / "output.h5"
-    record = ImageRecord("sample", "input.jpg", image_path)
+    record = ImageRecord(
+        "sample",
+        "input.jpg",
+        image_path,
+        head_bboxes=((0.0, 0.0, 4.0, 4.0),),
+        head_scores=(1.0,),
+    )
 
     with GazeH5Writer(output_path, metadata={}, overwrite=True) as writer:
         pipeline = GazePreprocessingPipeline(
             segmenter=FakeSegmenter(),
-            head_detector=FakeHeadDetector(),
             bbox_config=BBoxFilterConfig(
                 min_width=2,
                 min_height=2,
@@ -159,11 +137,17 @@ def test_pipeline_runs_end_to_end_with_replaceable_models(tmp_path):
         group = h5_file["images"]["sample"]
         np.testing.assert_array_equal(
             group["object_bboxes"][:],
-            np.asarray([[2, 1, 8, 6], [9, 2, 12, 5]], dtype=np.float32),
+            np.asarray(
+                [[2, 1, 8, 6], [2, 1, 8, 6], [9, 2, 12, 5]],
+                dtype=np.float32,
+            ),
         )
         np.testing.assert_array_equal(
             group["head_bboxes"][:],
             np.asarray([[0, 0, 4, 4]], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            group["head_scores"][:], np.asarray([1.0], dtype=np.float32)
         )
         assert "object_masks" not in group
 
@@ -172,7 +156,13 @@ def test_pipeline_enriches_live_regions_before_h5_write(tmp_path):
     image_path = tmp_path / "input.jpg"
     Image.new("RGB", (14, 8), color=(100, 120, 140)).save(image_path)
     output_path = tmp_path / "output.h5"
-    record = ImageRecord("sample", "input.jpg", image_path)
+    record = ImageRecord(
+        "sample",
+        "input.jpg",
+        image_path,
+        head_bboxes=((0.0, 0.0, 4.0, 4.0),),
+        head_scores=(1.0,),
+    )
     depth_estimator = FakeDepthEstimator()
     captioner = FakeCaptioner()
 
@@ -185,7 +175,6 @@ def test_pipeline_enriches_live_regions_before_h5_write(tmp_path):
     ) as writer:
         pipeline = GazePreprocessingPipeline(
             segmenter=FakeSegmenter(),
-            head_detector=FakeHeadDetector(),
             depth_estimator=depth_estimator,
             captioner=captioner,
             bbox_config=BBoxFilterConfig(
@@ -201,14 +190,17 @@ def test_pipeline_enriches_live_regions_before_h5_write(tmp_path):
         )
         pipeline.process_image(record)
 
-    assert depth_estimator.calls[0][2].shape == (2, 8, 14)
-    assert captioner.calls[0][2].shape == (2, 8, 14)
+    assert depth_estimator.calls[0][2].shape == (3, 8, 14)
+    assert captioner.calls[0][2].shape == (3, 8, 14)
     with h5py.File(output_path, "r") as h5_file:
         group = h5_file["images"]["sample"]
         assert group["object_descriptions"].asstr()[:].tolist() == [
             "object 0",
             "object 1",
+            "object 2",
         ]
         assert group["head_descriptions"].asstr()[:].tolist() == ["head 0"]
-        np.testing.assert_allclose(group["object_depth"]["mean"][:], [0.4, 0.4])
+        np.testing.assert_allclose(
+            group["object_depth"]["mean"][:], [0.4, 0.4, 0.4]
+        )
         assert group["normalized_depth_map"].shape == (8, 14)

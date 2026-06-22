@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import json
 import re
 import warnings
 from pathlib import Path
@@ -258,6 +259,10 @@ def _clip_draw_box(box, image_size):
     return x1, y1, min(x2, width - 1), min(y2, height - 1)
 
 
+def bbox_label(label, index):
+    return f"{label}_{int(index)}"
+
+
 def draw_bboxes(
     image,
     bboxes,
@@ -275,31 +280,13 @@ def draw_bboxes(
     result = image.convert("RGB").copy()
     draw = ImageDraw.Draw(result)
     boxes = _normalize_boxes(bboxes, "bboxes", label)
-    score_values = _normalize_vector(
-        scores if scores is not None else [], np.float32
-    )
-    descriptions = list(descriptions or [])
-    depth_values = _normalize_vector(
-        mean_depth if mean_depth is not None else [], np.float32
-    )
     for index, box in enumerate(boxes):
         clipped = _clip_draw_box(box, result.size)
         if clipped is None:
             _warning(f"Ignoring invalid {label} bbox: {box.tolist()}")
             continue
         draw.rectangle(clipped, outline=color, width=int(width))
-        text = label
-        if index < len(score_values) and np.isfinite(score_values[index]):
-            text += f" {float(score_values[index]):.3f}"
-        if show_depth and index < len(depth_values) and np.isfinite(depth_values[index]):
-            text += f" d={float(depth_values[index]):.3f}"
-        if show_description and index < len(descriptions):
-            description = " ".join(str(descriptions[index]).split())
-            limit = max(int(max_description_chars), 1)
-            if len(description) > limit:
-                description = description[: max(limit - 3, 1)] + "..."
-            if description:
-                text += f" {description}"
+        text = bbox_label(label, index)
         text_box = draw.textbbox((clipped[0], clipped[1]), text)
         background = (
             text_box[0] - 1,
@@ -348,6 +335,93 @@ def draw_masks(image, masks, *, alpha=0.35):
     return result.convert("RGB")
 
 
+def _json_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return round(number, 6)
+
+
+def _json_bbox(box):
+    values = np.asarray(box, dtype=np.float32).reshape(-1)
+    if len(values) != 4:
+        return []
+    return [_json_number(value) for value in values]
+
+
+def _json_depth(depth_values, index):
+    result = {}
+    for name in ("mean", "median", "min", "max", "std"):
+        values = np.asarray(depth_values.get(name, []), dtype=np.float32).reshape(-1)
+        result[name] = _json_number(values[index]) if index < len(values) else None
+    return result
+
+
+def build_region_json(sample):
+    objects = _normalize_boxes(
+        sample.get("object_bboxes", []), "object_bboxes", sample.get("image_id", "")
+    )
+    heads = _normalize_boxes(
+        sample.get("head_bboxes", []), "head_bboxes", sample.get("image_id", "")
+    )
+    object_scores = _normalize_vector(sample.get("object_scores", []), np.float32)
+    head_scores = _normalize_vector(sample.get("head_scores", []), np.float32)
+    object_descriptions = list(sample.get("object_descriptions") or [])
+    head_descriptions = list(sample.get("head_descriptions") or [])
+    object_depth = sample.get("object_depth") or {}
+    head_depth = sample.get("head_depth") or {}
+
+    object_entries = []
+    for index, box in enumerate(objects):
+        entry = {
+            "id": f"object_{index}",
+            "bbox": _json_bbox(box),
+            "score": (
+                _json_number(object_scores[index])
+                if index < len(object_scores)
+                else None
+            ),
+            "depth": _json_depth(object_depth, index),
+            "description": (
+                str(object_descriptions[index])
+                if index < len(object_descriptions)
+                else ""
+            ),
+        }
+        object_entries.append(entry)
+
+    person_entries = []
+    for index, box in enumerate(heads):
+        entry = {
+            "id": f"person_{index}",
+            "bbox": _json_bbox(box),
+            "score": (
+                _json_number(head_scores[index])
+                if index < len(head_scores)
+                else None
+            ),
+            "depth": _json_depth(head_depth, index),
+            "description": (
+                str(head_descriptions[index])
+                if index < len(head_descriptions)
+                else ""
+            ),
+        }
+        person_entries.append(entry)
+
+    image_size = sample.get("image_size")
+    return {
+        "image_id": str(sample.get("image_id", "")),
+        "image_path": str(sample.get("image_path", "")),
+        "image_size": list(image_size) if image_size else None,
+        "object": object_entries,
+        "person": person_entries,
+    }
+
+
 def _safe_image_id(value):
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
     return safe or "sample"
@@ -382,9 +456,9 @@ def visualize_sample(
             image,
             sample.get("object_bboxes", []),
             scores=sample.get("object_scores"),
-            descriptions=sample.get("object_descriptions"),
+            descriptions=None,
             mean_depth=sample.get("object_depth", {}).get("mean"),
-            show_description=show_description,
+            show_description=False,
             show_depth=show_depth,
             max_description_chars=max_description_chars,
             label="object",
@@ -395,12 +469,12 @@ def visualize_sample(
             image,
             sample.get("head_bboxes", []),
             scores=sample.get("head_scores"),
-            descriptions=sample.get("head_descriptions"),
+            descriptions=None,
             mean_depth=sample.get("head_depth", {}).get("mean"),
-            show_description=show_description,
+            show_description=False,
             show_depth=show_depth,
             max_description_chars=max_description_chars,
-            label="head",
+            label="person",
             color=(255, 50, 50),
         )
 
@@ -409,10 +483,12 @@ def visualize_sample(
     output_path = output_dir / (
         f"{int(sample['index']):06d}_{_safe_image_id(sample['image_id'])}_vis.jpg"
     )
-    if output_path.exists() and not overwrite:
-        _warning(f"Output exists, skipping: {output_path}")
-        return None
     image.save(output_path, format="JPEG", quality=95)
+    json_path = output_path.with_suffix(".json")
+    json_path.write_text(
+        json.dumps(build_region_json(sample), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(f"Saved {output_path}")
     return output_path
 

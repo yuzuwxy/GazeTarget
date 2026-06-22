@@ -15,7 +15,6 @@ from config import load_config
 from preprocessing.bbox import BBoxFilterConfig
 from preprocessing.depth_anything import DepthAnythingEstimator
 from preprocessing.describe_anything import DescribeAnythingCaptioner
-from preprocessing.head_detector import build_head_detector
 from preprocessing.image_source import discover_images
 from preprocessing.pipeline import GazePreprocessingPipeline
 from preprocessing.sam2_segmenter import SAM2Segmenter
@@ -58,7 +57,6 @@ def build_pipeline(config, writer, stack):
     device = config["runtime"].get("device", "cuda:0")
     _require_runtime_device(device)
     sam2_config = config["sam2"]
-    head_config = config["head_detector"]
     segmenter = stack.enter_context(
         SAM2Segmenter(
             source_path=sam2_config["source_path"],
@@ -68,9 +66,6 @@ def build_pipeline(config, writer, stack):
             dtype=sam2_config.get("dtype", "bfloat16"),
             generator=sam2_config.get("generator", {}),
         )
-    )
-    head_detector = stack.enter_context(
-        build_head_detector(head_config, device=device)
     )
     depth_estimator = None
     depth_config = config.get("depth", {})
@@ -115,7 +110,6 @@ def build_pipeline(config, writer, stack):
         )
     return GazePreprocessingPipeline(
         segmenter=segmenter,
-        head_detector=head_detector,
         bbox_config=BBoxFilterConfig.from_dict(config["bbox_filter"]),
         writer=writer,
         save_masks=config["output"].get("save_masks", False),
@@ -135,15 +129,7 @@ def run(config):
         "sam2_checkpoint": config["sam2"]["checkpoint"],
         "sam2_parameters": config["sam2"].get("generator", {}),
         "bbox_filter_parameters": config["bbox_filter"],
-        "head_detector": config["head_detector"].get(
-            "backend",
-            config["head_detector"].get("type", "grounding_dino"),
-        ),
-        "head_detector_parameters": {
-            key: value
-            for key, value in config["head_detector"].items()
-            if key not in {"checkpoint"}
-        },
+        "head_bbox_source": "dataset_annotation",
         "description_enabled": config.get("description", {}).get(
             "enabled", False
         ),

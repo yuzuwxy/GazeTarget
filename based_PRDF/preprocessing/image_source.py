@@ -1,8 +1,9 @@
 import csv
 import hashlib
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
@@ -13,6 +14,8 @@ class ImageRecord:
     image_id: str
     relative_path: str
     absolute_path: Path
+    head_bboxes: Tuple[Tuple[float, float, float, float], ...] = ()
+    head_scores: Tuple[float, ...] = ()
 
 
 def _image_id(relative_path: str) -> str:
@@ -21,15 +24,49 @@ def _image_id(relative_path: str) -> str:
     return f"img_{digest}"
 
 
-def _records(root: Path, relative_paths: Iterable[str]) -> List[ImageRecord]:
+def _records(
+    root: Path,
+    relative_paths: Iterable[str],
+    head_bboxes_by_path: Optional[
+        Dict[str, Tuple[Tuple[float, float, float, float], ...]]
+    ] = None,
+) -> List[ImageRecord]:
+    head_bboxes_by_path = head_bboxes_by_path or {}
     result = []
     for relative_path in relative_paths:
         normalized = Path(relative_path).as_posix()
         absolute_path = root / normalized
         if not absolute_path.is_file():
             raise FileNotFoundError(f"Image not found: {absolute_path}")
-        result.append(ImageRecord(_image_id(normalized), normalized, absolute_path))
+        head_bboxes = head_bboxes_by_path.get(normalized, ())
+        result.append(
+            ImageRecord(
+                _image_id(normalized),
+                normalized,
+                absolute_path,
+                head_bboxes=head_bboxes,
+                head_scores=tuple(1.0 for _ in head_bboxes),
+            )
+        )
     return result
+
+
+def _parse_gazefollow_head_bbox(row, annotation_path):
+    if len(row) < 14:
+        raise ValueError(
+            f"GazeFollow annotation row must contain head bbox columns 10:14: {annotation_path}"
+        )
+    try:
+        bbox = tuple(float(value) for value in row[10:14])
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid GazeFollow head bbox in {annotation_path}: {row[10:14]}"
+        ) from exc
+    if not all(math.isfinite(value) for value in bbox):
+        raise ValueError(
+            f"Non-finite GazeFollow head bbox in {annotation_path}: {row[10:14]}"
+        )
+    return bbox
 
 
 def _discover_directory(config):
@@ -59,15 +96,26 @@ def _discover_gazefollow(config):
         raise FileNotFoundError(f"GazeFollow annotation not found: {annotation_path}")
     relative_paths = []
     seen = set()
+    head_bboxes_by_path = {}
+    seen_bboxes_by_path = {}
     with annotation_path.open("r", encoding="utf-8-sig", newline="") as file:
         for row in csv.reader(file):
             if not row:
                 continue
             path = Path(row[0].strip()).as_posix()
+            bbox = _parse_gazefollow_head_bbox(row, annotation_path)
             if path and path not in seen:
                 seen.add(path)
                 relative_paths.append(path)
-    return _records(image_root, relative_paths)
+            if path:
+                seen_bboxes = seen_bboxes_by_path.setdefault(path, set())
+                if bbox not in seen_bboxes:
+                    seen_bboxes.add(bbox)
+                    head_bboxes_by_path.setdefault(path, []).append(bbox)
+    head_bboxes_by_path = {
+        path: tuple(bboxes) for path, bboxes in head_bboxes_by_path.items()
+    }
+    return _records(image_root, relative_paths, head_bboxes_by_path)
 
 
 def discover_images(config):

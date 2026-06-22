@@ -1,3 +1,4 @@
+import json
 import warnings
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from h5_reader import (
+    bbox_label,
     collect_image_samples,
     draw_bboxes,
     draw_masks,
@@ -130,13 +132,18 @@ def test_draw_functions_clip_boxes_and_overlay_masks():
     assert np.asarray(overlaid)[2, 3].tolist() != [255, 255, 255]
 
 
+def test_bbox_label_uses_only_region_number():
+    assert bbox_label("object", 0) == "object_0"
+    assert bbox_label("person", 12) == "person_12"
+
+
 def test_select_sample_indices_applies_explicit_selection_and_limit():
     assert select_sample_indices(5, indices=[3, 1, 9], limit=2) == [3, 1]
     assert select_sample_indices(5, index=2, limit=None) == [2]
     assert select_sample_indices(5, limit=3) == [0, 1, 2]
 
 
-def test_visualize_sample_does_not_overwrite_by_default(tmp_path):
+def test_visualize_sample_overwrites_existing_output(tmp_path):
     image_root = tmp_path / "images"
     image_path = image_root / "train" / "a.jpg"
     image_path.parent.mkdir(parents=True)
@@ -163,6 +170,7 @@ def test_visualize_sample_does_not_overwrite_by_default(tmp_path):
         draw_head=True,
         mask_alpha=0.35,
     )
+    first.write_bytes(b"stale")
     second = visualize_sample(
         sample,
         image_root=image_root,
@@ -177,7 +185,92 @@ def test_visualize_sample_does_not_overwrite_by_default(tmp_path):
 
     assert first == tmp_path / "out" / "000001_image_a_vis.jpg"
     assert first.is_file()
-    assert second is None
+    assert second == first
+    assert first.read_bytes() != b"stale"
+
+
+def test_visualize_sample_writes_region_json_without_descriptions_on_image(tmp_path):
+    image_root = tmp_path / "images"
+    image_path = image_root / "train" / "a.jpg"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (12, 10), (255, 255, 255)).save(image_path)
+    sample = {
+        "image_id": "image/a",
+        "index": 2,
+        "image_path": "train/a.jpg",
+        "object_bboxes": np.asarray([[1, 1, 5, 6]], dtype=np.float32),
+        "object_scores": np.asarray([0.9], dtype=np.float32),
+        "object_mask_areas": np.asarray([20], dtype=np.int64),
+        "object_descriptions": ["red cup on the table"],
+        "object_depth": {
+            "mean": np.asarray([0.42], dtype=np.float32),
+            "median": np.asarray([0.41], dtype=np.float32),
+            "min": np.asarray([0.2], dtype=np.float32),
+            "max": np.asarray([0.8], dtype=np.float32),
+            "std": np.asarray([0.1], dtype=np.float32),
+        },
+        "head_bboxes": np.asarray([[6, 1, 10, 5]], dtype=np.float32),
+        "head_scores": np.asarray([1.0], dtype=np.float32),
+        "head_descriptions": ["visible person head"],
+        "head_depth": {
+            "mean": np.asarray([0.33], dtype=np.float32),
+            "median": np.asarray([0.32], dtype=np.float32),
+            "min": np.asarray([0.1], dtype=np.float32),
+            "max": np.asarray([0.6], dtype=np.float32),
+            "std": np.asarray([0.05], dtype=np.float32),
+        },
+        "object_masks": None,
+    }
+
+    image_output = visualize_sample(
+        sample,
+        image_root=image_root,
+        h5_path=tmp_path / "sample.h5",
+        output_dir=tmp_path / "out",
+        draw_mask=False,
+        draw_bbox=True,
+        draw_head=True,
+        mask_alpha=0.35,
+        show_description=True,
+        show_depth=True,
+    )
+
+    json_output = image_output.with_suffix(".json")
+    assert json_output.is_file()
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    assert payload["image_id"] == "image/a"
+    assert payload["object"] == [
+        {
+            "id": "object_0",
+            "bbox": [1.0, 1.0, 5.0, 6.0],
+            "score": 0.9,
+            "depth": {
+                "mean": 0.42,
+                "median": 0.41,
+                "min": 0.2,
+                "max": 0.8,
+                "std": 0.1,
+            },
+            "description": "red cup on the table",
+        }
+    ]
+    assert payload["person"] == [
+        {
+            "id": "person_0",
+            "bbox": [6.0, 1.0, 10.0, 5.0],
+            "score": 1.0,
+            "depth": {
+                "mean": 0.33,
+                "median": 0.32,
+                "min": 0.1,
+                "max": 0.6,
+                "std": 0.05,
+            },
+            "description": "visible person head",
+        }
+    ]
+    image_array = np.asarray(Image.open(image_output).convert("RGB"))
+    assert (image_array[:, :, 0] > 200).any()
 
 
 def test_main_uses_config_paths_and_indices(tmp_path):

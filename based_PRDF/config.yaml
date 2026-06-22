@@ -21,7 +21,6 @@ visualization:
   draw_bbox: true
   draw_head: true
   mask_alpha: 0.35
-  show_description: true
   show_depth: true
   max_description_chars: 48
 
@@ -50,7 +49,7 @@ llm:
   model: "qwen3.7-max"
   # Leave api_key empty for public configs; prefer api_key_env_var.
   api_key: ""
-  api_key_env_var: "LLM_API_KEY"  # sk-c02532d46b6d47ffa8583bae446fffcd
+  api_key_env_var: "LLM_API_KEY"
   # api_mode: "responses"
   reasoning_effort: "xhigh"
   reasoning:
@@ -104,24 +103,6 @@ bbox_filter:
   duplicate_iou_threshold: 0.85
   containment_threshold: 0.95
   containment_area_ratio: 0.5
-
-head_detector:
-  backend: hf_grounding_dino
-  model_id: openmmlab-community/mm_grounding_dino_tiny_o365v1_goldg_v3det
-  # The model is already cached here. Offline mode resolves model_id to the
-  # local Hugging Face snapshot without making network requests.
-  cache_dir: ./checkpoints/huggingface
-  local_files_only: true
-  prompts: ["person head", "human head", "head", "human face"]
-  allowed_labels: ["person head", "human head", "head"]
-  score_threshold: 0.3
-  box_threshold: 0.3
-  text_threshold: 0.25
-  nms_threshold: 0.5
-  max_detections: 20
-  min_width: 2
-  min_height: 2
-  min_area: 16
 
 description:
   enabled: true

@@ -11,21 +11,23 @@ unique image loading
 -> SAM2 automatic object masks
 -> mask-to-bbox conversion
 -> duplicate and containment filtering
--> Hugging Face MM Grounding DINO head detection
+-> dataset head bounding-box annotations
 -> Depth Anything V2 full-image depth and region statistics
 -> Describe Anything object/head region descriptions
 -> HDF5 output
 ```
 
-Object boxes are proposals derived from SAM2 masks. Head boxes are detections
-from a Transformers Grounding DINO/MM Grounding DINO model using configurable
-head prompts. GazeFollow ground-truth head annotations are not written as
-detections.
+Object boxes are proposals derived from SAM2 masks. Head boxes are read from
+dataset annotations, such as the pixel-level head bounding boxes in GazeFollow
+annotation columns 10:14. Directory inputs without annotation metadata write an
+empty head stream.
 
 Depth Anything and Describe Anything consume the live arrays produced for the
 current image. They do not read bbox or mask inputs back from HDF5. Retained
 SAM2 masks are passed directly to both enrichment steps and are also persisted
-because `output.save_masks` defaults to `true`.
+because `output.save_masks` defaults to `true`. SAM2 bbox filtering,
+deduplication, and containment post-processing are currently disabled for
+inspection; object boxes follow the raw retained SAM2 mask order.
 
 All boxes use image-pixel, half-open `xyxy` coordinates:
 
@@ -56,9 +58,6 @@ driver. Then install the lightweight dependencies:
 pip install -r requirements.txt
 ```
 
-The default head detector uses Hugging Face Transformers. The legacy local
-MMDetection implementation is still available through the backend setting.
-
 The recommended environment is the existing `mmgrounding` Conda environment:
 
 ```bash
@@ -66,8 +65,7 @@ conda activate mmgrounding
 pip install -r requirements.txt
 ```
 
-Install the PyTorch build for the machine separately. Transformers 4.50 or
-newer is required for the configured Hugging Face MM Grounding DINO model.
+Install the PyTorch build for the machine separately.
 
 Describe Anything and Depth Anything are configured from local sources and
 weights:
@@ -98,51 +96,11 @@ Edit `config.yaml`:
 - `output.save_masks`: whether retained pixel masks are stored
 - `sam2`: source, checkpoint, Hydra config, and generator parameters
 - `bbox_filter`: size, duplicate-IoU, and containment thresholds
-- `head_detector`: backend, model id, prompts, thresholds, NMS, and limits
 - `description`: local DAM paths, object/head prompts, and generation settings
 - `depth`: local Depth Anything paths, encoder, normalization, and map saving
 - `runtime.device`: for example `cuda:0`
 
 Relative filesystem paths are resolved relative to the YAML file.
-
-The default Hugging Face configuration is:
-
-```yaml
-head_detector:
-  backend: hf_grounding_dino
-  model_id: openmmlab-community/mm_grounding_dino_tiny_o365v1_goldg_v3det
-  cache_dir: ./checkpoints/huggingface
-  local_files_only: true
-  prompts: ["person head", "human head", "head"]
-  allowed_labels: ["person head", "human head", "head"]
-  score_threshold: 0.3
-  box_threshold: 0.3
-  text_threshold: 0.25
-  nms_threshold: 0.5
-  max_detections: 20
-  min_width: 2
-  min_height: 2
-  min_area: 16
-```
-
-`box_threshold` is passed to the model processor's grounded object detection
-post-processing. `text_threshold` controls phrase extraction.
-`score_threshold` is a final project-level confidence filter. Results are then
-clipped, checked for minimum geometry, filtered by label, processed with NMS,
-and truncated to `max_detections`.
-
-To use the retained MMDetection implementation:
-
-```yaml
-head_detector:
-  backend: mmdetection
-  source_path: ./third_party/mmdetection
-  checkpoint: ./checkpoints/grounding_dino_swin-t_pretrain_obj365_goldg_grit9m_v3det.pth
-  config: ./configs/grounding_dino_swin-t_obj365_v3det_inference.py
-  prompt: person head
-  score_threshold: 0.3
-  nms_threshold: 0.5
-```
 
 Description and depth are enabled by default:
 
@@ -193,37 +151,6 @@ The output is written through a temporary file and atomically moved into place
 after a successful run. Existing output is rejected unless
 `output.overwrite: true`.
 
-## Head Detector Sanity Check
-
-Validate the installed API without downloading model weights:
-
-```bash
-conda run -n mmgrounding python scripts/sanity_check_head_detector.py --dry-run
-```
-
-Run one image on CPU:
-
-```bash
-conda run -n mmgrounding python scripts/sanity_check_head_detector.py \
-  path/to/image.jpg \
-  --device cpu
-```
-
-The script prints JSON records containing:
-
-```json
-{
-  "bbox": [10.0, 20.0, 80.0, 100.0],
-  "score": 0.87,
-  "label": "person head"
-}
-```
-
-It also rejects non-finite, degenerate, or out-of-image boxes. The main
-pipeline stores the same boxes and scores in `head_bboxes` and `head_scores`;
-labels are retained by the detector metadata interface for debugging but are
-not added to the existing HDF5 schema.
-
 ## HDF5 Structure
 
 ```text
@@ -237,8 +164,7 @@ not added to the existing HDF5 schema.
     sam2_checkpoint
     sam2_parameters_json
     bbox_filter_parameters_json
-    head_detector
-    head_detector_parameters_json
+    head_bbox_source
 
 /images/{image_id}
   attrs:
@@ -272,8 +198,8 @@ not added to the existing HDF5 schema.
 ```
 
 Empty object or head results are still saved with shapes `(0, 4)` and `(0,)`.
-This keeps downstream readers simple and makes detector failures distinguishable
-from missing fields.
+This keeps downstream readers simple and makes missing annotations
+distinguishable from missing fields.
 
 Descriptions and every depth statistic are index-aligned with their matching
 bbox stream. Failed descriptions are empty strings. Invalid or empty depth
@@ -285,8 +211,8 @@ bbox. Head depth uses the head bbox.
 
 ## HDF5 Visualization
 
-Use the standalone reader to inspect source images, SAM2 object proposals, head
-detections, scores, and saved masks:
+Use the standalone reader to inspect source images, SAM2 object proposals,
+annotated head boxes, scores, and saved masks:
 
 ```bash
 conda run -n mmgrounding python h5_reader.py --config config.yaml
@@ -314,30 +240,29 @@ conda run -n mmgrounding python h5_reader.py \
 conda run -n mmgrounding python h5_reader.py outputs/gaze_preprocessing.h5 \
   --image-root /path/to/image/root \
   --output-dir ./output/images \
-  --no-draw-mask \
-  --overwrite
+  --no-draw-mask
 ```
 
 For `input.type: gazefollow`, the image root is inferred as
 `input.path/data_extended`. For `directory`, it is `input.path`.
 `--image-root` overrides that inference. The reader also supports H5 samples
-that directly contain an `image`, `image_array`, or `rgb` dataset.
+that directly contain an `image`, `image_array`, or `rgb` dataset. Existing
+visualization files are overwritten automatically.
 
 Visualization colors:
 
 - green: SAM2-derived object bbox and object score;
-- red: Grounding DINO head bbox and head score;
+- red: annotated head bbox and head score;
 - translucent rotating colors: `object_masks`, when present.
 
-By default labels also include a truncated description and mean depth. Control
-them with:
+Descriptions and scores are not drawn on the image; each box is labeled only
+with its numbered id, such as `object_0` or `person_0`. For each visualization
+image the reader writes a same-name JSON file containing numbered `object` and
+`person` entries with bbox, score, depth statistics, and description fields.
 
 ```bash
 conda run -n mmgrounding python h5_reader.py --config config.yaml \
-  --show-description --show-depth
-
-conda run -n mmgrounding python h5_reader.py --config config.yaml \
-  --no-show-description --no-show-depth
+  --no-show-depth
 ```
 
 The current schema does not save detection labels, so the reader uses the known
@@ -347,10 +272,9 @@ warnings and do not stop processing of later samples.
 
 ## Filtering
 
-Mask boxes are clipped to the image and filtered by width, height, pixel area,
-and image-area ratio. Lower-priority boxes are removed when they highly overlap
-an already retained box or are nearly contained by a substantially larger box.
-All thresholds are stored in `config.yaml` and copied into HDF5 metadata.
+SAM2 mask boxes are currently converted directly from masks and are not filtered
+or deduplicated. The `bbox_filter` settings remain in the config for later
+re-enabling of that post-processing path.
 
 ## Tests
 
@@ -359,24 +283,13 @@ conda run -n mmgrounding python -m pytest -v
 ```
 
 Tests cover bbox geometry, filtering, image discovery, HDF5 schema, empty
-detections, and a complete pipeline using replaceable lightweight model
-adapters.
+streams, and a complete pipeline using replaceable lightweight model adapters.
 
 ## Troubleshooting
 
 - `CUDA is not available`: run on a node where the configured CUDA device is
   visible. The preprocessing pipeline is CUDA-only.
 - `SAM2 checkpoint not found`: update `sam2.checkpoint`.
-- `Unable to load Hugging Face Grounding DINO model`: verify
-  `transformers>=4.50,<5`, the model id, network access, and `cache_dir`.
-- Offline inference: keep the same `model_id` and `cache_dir`, then set
-  `local_files_only: true`. The detector resolves the repository id to its
-  local snapshot before calling Transformers, so loading does not request the
-  network. `model_id` may also point directly to a local Transformers model
-  directory containing `config.json`, `model.safetensors`, processor config,
-  and tokenizer files.
-- Legacy `Unable to import MMDetection`: verify `head_detector.source_path`
-  and the local MMDetection dependencies.
 - `Describe Anything requires an available CUDA device`: run on a CUDA-visible
   node and keep `description.device: cuda:0`.
 - `Depth Anything requires an available CUDA device`: verify the configured

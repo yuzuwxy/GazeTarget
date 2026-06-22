@@ -9,7 +9,6 @@ REQUIRED_SECTIONS = (
     "output",
     "sam2",
     "bbox_filter",
-    "head_detector",
     "runtime",
 )
 PATH_FIELDS = {
@@ -17,10 +16,6 @@ PATH_FIELDS = {
     ("output", "h5_path"),
     ("sam2", "source_path"),
     ("sam2", "checkpoint"),
-    ("head_detector", "source_path"),
-    ("head_detector", "checkpoint"),
-    ("head_detector", "config"),
-    ("head_detector", "cache_dir"),
     ("description", "source_path"),
     ("description", "checkpoint"),
     ("depth", "source_path"),
@@ -54,46 +49,6 @@ def _validate_config(config, path):
     ):
         if not config[section].get(key):
             raise ValueError(f"{section}.{key} is required")
-
-    head_config = config["head_detector"]
-    backend = str(
-        head_config.get("backend", head_config.get("type", ""))
-    ).lower()
-    if backend in {"hf_grounding_dino", "huggingface", "hf"}:
-        if not head_config.get("model_id"):
-            raise ValueError("head_detector.model_id is required")
-        prompts = head_config.get("prompts")
-        if not isinstance(prompts, list) or not prompts or not all(
-            isinstance(prompt, str) and prompt.strip() for prompt in prompts
-        ):
-            raise ValueError("head_detector.prompts must be a non-empty list")
-        allowed = head_config.get("allowed_labels", prompts)
-        if not isinstance(allowed, list) or not allowed:
-            raise ValueError(
-                "head_detector.allowed_labels must be a non-empty list"
-            )
-        for key in (
-            "score_threshold",
-            "box_threshold",
-            "text_threshold",
-            "nms_threshold",
-        ):
-            value = float(head_config.get(key, 0.5))
-            if not 0 <= value <= 1:
-                raise ValueError(f"head_detector.{key} must be between 0 and 1")
-        if int(head_config.get("max_detections", 20)) <= 0:
-            raise ValueError("head_detector.max_detections must be > 0")
-        for key in ("min_width", "min_height", "min_area"):
-            if float(head_config.get(key, 0)) < 0:
-                raise ValueError(f"head_detector.{key} must be >= 0")
-    elif backend in {"mmdetection", "grounding_dino"}:
-        for key in ("source_path", "checkpoint", "config"):
-            if not head_config.get(key):
-                raise ValueError(f"head_detector.{key} is required")
-    else:
-        raise ValueError(
-            "head_detector.backend must be 'hf_grounding_dino' or 'mmdetection'"
-        )
 
     limit = config["input"].get("limit")
     if limit is not None and int(limit) < 0:

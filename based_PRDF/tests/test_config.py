@@ -20,11 +20,6 @@ sam2:
   checkpoint: checkpoints/sam.pt
   config: configs/sam.yaml
 bbox_filter: {}
-head_detector:
-  type: grounding_dino
-  source_path: vendor/mmdet
-  checkpoint: checkpoints/head.pth
-  config: configs/head.py
 runtime:
   device: cuda:0
 """,
@@ -47,7 +42,7 @@ def test_load_config_requires_pipeline_sections(tmp_path):
         load_config(config_path)
 
 
-def test_load_config_accepts_hf_head_detector(tmp_path):
+def test_load_config_accepts_missing_head_detector(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -61,17 +56,6 @@ sam2:
   checkpoint: checkpoints/sam.pt
   config: configs/sam.yaml
 bbox_filter: {}
-head_detector:
-  backend: hf_grounding_dino
-  model_id: openmmlab-community/test-model
-  cache_dir: model-cache
-  prompts: [person head, human head, head]
-  allowed_labels: [person head, human head, head]
-  score_threshold: 0.3
-  box_threshold: 0.3
-  text_threshold: 0.25
-  nms_threshold: 0.5
-  max_detections: 20
 runtime:
   device: cuda:0
 """,
@@ -80,12 +64,10 @@ runtime:
 
     config = load_config(config_path)
 
-    assert config["head_detector"]["backend"] == "hf_grounding_dino"
-    assert config["head_detector"]["model_id"] == "openmmlab-community/test-model"
-    assert config["head_detector"]["cache_dir"] == str(tmp_path / "model-cache")
+    assert "head_detector" not in config
 
 
-def test_load_config_rejects_unknown_head_detector_backend(tmp_path):
+def test_load_config_rejects_non_cuda_runtime_device(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -96,17 +78,16 @@ sam2:
   checkpoint: checkpoints/sam.pt
   config: configs/sam.yaml
 bbox_filter: {}
-head_detector: {backend: unknown}
 runtime: {device: cpu}
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="head_detector.backend"):
+    with pytest.raises(ValueError, match="runtime.device"):
         load_config(config_path)
 
 
-def test_load_config_rejects_invalid_detection_threshold(tmp_path):
+def test_load_config_rejects_non_cuda_runtime_device_before_enrichment(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -117,17 +98,12 @@ sam2:
   checkpoint: checkpoints/sam.pt
   config: configs/sam.yaml
 bbox_filter: {}
-head_detector:
-  backend: hf_grounding_dino
-  model_id: test/model
-  prompts: [head]
-  score_threshold: 1.5
 runtime: {device: cpu}
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="score_threshold"):
+    with pytest.raises(ValueError, match="runtime.device"):
         load_config(config_path)
 
 
@@ -142,10 +118,6 @@ sam2:
   checkpoint: checkpoints/sam.pt
   config: configs/sam.yaml
 bbox_filter: {}
-head_detector:
-  backend: hf_grounding_dino
-  model_id: test/model
-  prompts: [head]
 description:
   enabled: true
   source_path: vendor/DAM
